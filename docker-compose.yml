@@ -1,0 +1,72 @@
+services:
+  # 집 미니 PC 분산 수집 워커.
+  # 회사 mk_postgres + mk_redis 에 Tailscale VPN 으로 접속.
+  # Bull Queue 공유 — 회사 워커와 자동 분담 (동일 풀 키워드 중복 호출 X).
+  collector:
+    image: ghcr.io/cho-y-j/marketing-api:latest
+    container_name: home_collector
+    restart: unless-stopped
+    pull_policy: always
+    network_mode: host  # Tailscale 호스트에서 회사 mk_postgres/mk_redis 접속용
+    environment:
+      # COLLECTOR_ONLY 모드 — main.ts + app.module + jobs.module 의 분기 ENV.
+      # 분석/AI/Web/Admin 모듈 비활성. keyword-pool processor + cron 만 가동.
+      COLLECTOR_ONLY: "true"
+      WORKER_NAME: "${WORKER_NAME:-home}"  # 로그 식별자
+
+      # DB/Redis — Tailscale 내부 IP 로 회사 PC 접속.
+      # 회사 PC 의 Tailscale IP 를 .env 에 적어두면 됨 (예: 100.64.0.5).
+      # mk_postgres 호스트 5433, mk_redis 호스트 6379 (또는 6382 — 회사 docker-compose 확인).
+      DATABASE_URL: "${DATABASE_URL}"
+      REDIS_URL: "${REDIS_URL}"
+
+      # 풀 시드 비활성 — 시드는 회사 측에서 1회 한 것만 유효.
+      DISABLE_KEYWORD_POOL_SEED: "true"
+
+      # AI 호출 비활성 — collector 는 네이버 호출만, AI 0.
+      DISABLE_AI: "true"
+
+      # 운영 환경 식별 (옵션)
+      NODE_ENV: production
+      TZ: Asia/Seoul
+
+      # 검색광고 API 키 (옵션) — 풀 cleanup cron 이 검색량 측정 시 사용.
+      # 비워두면 회사 측에서 측정한 결과만 보고 PAUSED 판정.
+      NAVER_SEARCHAD_API_KEY: "${NAVER_SEARCHAD_API_KEY:-}"
+      NAVER_SEARCHAD_SECRET_KEY: "${NAVER_SEARCHAD_SECRET_KEY:-}"
+      NAVER_SEARCHAD_CUSTOMER_ID: "${NAVER_SEARCHAD_CUSTOMER_ID:-}"
+
+      # NEXTAUTH_SECRET — config 에서 require 라 빈 값이라도 32자+ 필요 (collector 는 안 씀).
+      NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-collector_dummy_secret_at_least_32_chars_long_xx}"
+
+      # ENCRYPTION_KEY — crypto.service 가 부팅 시 검증. collector 는 안 쓰지만 빈 값이면 부팅 실패.
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:-collector_dummy_at_least_32_chars_for_scrypt_xx}"
+
+    # 헬스체크 — Bull processor 가 1분 cron 으로 잡 처리 → 5분 안에 처리 로그 있어야 정상.
+    # 단순화: process 살아있나만 확인 (Node 가 죽으면 restart: unless-stopped 가 자동 부활).
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'node.*main' > /dev/null || exit 1"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    # Watchtower 로 자동 업데이트 — GHCR :latest 갱신 시 자동 재시작.
+    # 회사 mk_api 와 동일한 이미지 태그를 따라가므로 본 marketing 빌드되면 collector 도 자동 갱신.
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  # Watchtower — :latest 태그 폴링 + 자동 pull/재시작.
+  # 회사 워크플로우와 동일. 5분마다 GHCR 확인.
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: home_watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_POLL_INTERVAL: "300"  # 5분
+      TZ: Asia/Seoul
+    command: ["--label-enable", "--cleanup", "--interval", "300"]
