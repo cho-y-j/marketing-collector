@@ -156,6 +156,122 @@ docker logs mk_api --tail 50 | grep pool-collect
 
 또는 어드민 페이지 `/admin/keyword-pool` 의 진척률 카드가 평소보다 2배 빠르게 증가하면 OK.
 
+## 5-A. PostgreSQL Streaming Replica 셋업 (자산 백업)
+
+회사 SSD 사망 시 데이터 0 손실을 위해 hot standby replica 운영.
+
+### 회사 PC (master) 사전 작업
+
+#### 1) postgresql.conf 수정
+회사 mk_postgres 의 conf 파일 편집 — 컨테이너 안 또는 volume mount 위치:
+```bash
+docker exec -it mk_postgres sh
+echo "wal_level = replica" >> /var/lib/postgresql/data/postgresql.conf
+echo "max_wal_senders = 10" >> /var/lib/postgresql/data/postgresql.conf
+echo "max_replication_slots = 10" >> /var/lib/postgresql/data/postgresql.conf
+echo "hot_standby = on" >> /var/lib/postgresql/data/postgresql.conf
+exit
+```
+
+#### 2) pg_hba.conf — Tailscale 대역 허용
+```bash
+docker exec -it mk_postgres sh -c \
+  'echo "host replication replicator 100.64.0.0/10 scram-sha-256" >> /var/lib/postgresql/data/pg_hba.conf'
+```
+
+#### 3) replicator 사용자 + replication slot 생성
+```bash
+docker exec -it mk_postgres psql -U admin -d marketing_intelligence
+```
+```sql
+CREATE USER replicator WITH REPLICATION ENCRYPTED PASSWORD '강력한_패스워드_입력';
+SELECT pg_create_physical_replication_slot('home_replica_slot');
+\q
+```
+
+#### 4) mk_postgres 재시작 (설정 적용)
+```bash
+docker restart mk_postgres
+```
+
+### 집 PC (replica) 부팅
+`.env` 의 `MASTER_HOST` / `REPLICATOR_PASSWORD` 등 채운 후:
+```bash
+docker compose up -d postgres-replica
+docker compose logs -f postgres-replica
+```
+다음 로그 보이면 정상:
+```
+[replica-init] 회사 master 100.64.0.5:5433 에서 base backup 시작
+[replica-init] base backup 완료. standby 모드 활성
+LOG:  database system is ready to accept read-only connections
+LOG:  started streaming WAL from primary at ...
+```
+
+### 검증
+회사 master 에서 replica 연결 확인:
+```bash
+docker exec mk_postgres psql -U admin -d marketing_intelligence -c "SELECT * FROM pg_stat_replication;"
+```
+`application_name=home_replica` row 가 있고 `state=streaming` 이면 정상.
+
+### 사고 시 master 승격 (수동)
+회사 PC 사망 시 집 replica 를 master 로:
+```bash
+# 집 PC 에서
+docker exec home_postgres_replica psql -U admin -c "SELECT pg_promote();"
+```
+이후 `DATABASE_URL` 을 집 PC 의 Tailscale IP 로 변경하면 서비스 재개.
+
+## 5-B. Uptime Kuma 셋업 (모니터링 + 알림)
+
+### 가동
+```bash
+docker compose up -d uptime-kuma
+```
+
+### Web UI 접속
+브라우저에서 집 PC 의 Tailscale IP + 3001 포트:
+```
+http://<집PC_Tailscale_IP>:3001
+```
+처음 접속 시 admin 계정 생성.
+
+### 모니터링 추가 (회사 endpoint)
+
+**Monitor 1 — 회사 mk_api**
+- Type: HTTP(s)
+- URL: `http://100.64.0.5:4000/api/health` (또는 회사 endpoint)
+- Heartbeat: 60초
+
+**Monitor 2 — 회사 mk_web**
+- Type: HTTP(s)
+- URL: `http://100.64.0.5:3200`
+- Heartbeat: 60초
+
+**Monitor 3 — 회사 mk_postgres**
+- Type: TCP
+- Hostname: `100.64.0.5`
+- Port: `5433`
+- Heartbeat: 60초
+
+**Monitor 4 — 외부 도메인 (사용자 관점)**
+- Type: HTTP(s)
+- URL: `http://1.221.158.115:3200`
+- Heartbeat: 60초
+- → 외부 사용자가 보는 URL 다운 시 즉시 감지
+
+### 알림 채널 셋업 (Settings > Notifications)
+권장: **카카오톡 친구톡 (Bizppurio)** 또는 **텔레그램 봇**
+
+텔레그램이 가장 간단:
+1. @BotFather 에 `/newbot` → 봇 생성, 토큰 발급
+2. 본인이 봇과 첫 메시지 보내기 → @userinfobot 으로 chat_id 확인
+3. Uptime Kuma 의 Notifications 에 Telegram 추가
+4. 모든 Monitor 에 이 알림 연결
+
+다운 발생 시 → 텔레그램 즉시 알림 (5초 안에 도착).
+
 ## 6. 자동 운영
 
 - **재시작**: 미니 PC 재부팅 → Docker 자동 시작 → collector 자동 가동

@@ -1,63 +1,106 @@
 services:
-  # 집 미니 PC 분산 수집 워커.
+  # ─────────────────────────────────────────────────────────────────────────
+  # 1) Collector — 네이버 분산 수집 워커
+  # ─────────────────────────────────────────────────────────────────────────
+  # 본 marketing docker 이미지 그대로 재사용 (코드 중복 0).
   # 회사 mk_postgres + mk_redis 에 Tailscale VPN 으로 접속.
-  # Bull Queue 공유 — 회사 워커와 자동 분담 (동일 풀 키워드 중복 호출 X).
+  # Bull Queue 공유 — 회사 워커와 자동 분담.
   collector:
     image: ghcr.io/cho-y-j/marketing-api:latest
     container_name: home_collector
     restart: unless-stopped
     pull_policy: always
-    network_mode: host  # Tailscale 호스트에서 회사 mk_postgres/mk_redis 접속용
+    network_mode: host
     environment:
-      # COLLECTOR_ONLY 모드 — main.ts + app.module + jobs.module 의 분기 ENV.
-      # 분석/AI/Web/Admin 모듈 비활성. keyword-pool processor + cron 만 가동.
       COLLECTOR_ONLY: "true"
-      WORKER_NAME: "${WORKER_NAME:-home}"  # 로그 식별자
-
-      # DB/Redis — Tailscale 내부 IP 로 회사 PC 접속.
-      # 회사 PC 의 Tailscale IP 를 .env 에 적어두면 됨 (예: 100.64.0.5).
-      # mk_postgres 호스트 5433, mk_redis 호스트 6379 (또는 6382 — 회사 docker-compose 확인).
+      WORKER_NAME: "${WORKER_NAME:-home}"
       DATABASE_URL: "${DATABASE_URL}"
       REDIS_URL: "${REDIS_URL}"
-
-      # 풀 시드 비활성 — 시드는 회사 측에서 1회 한 것만 유효.
       DISABLE_KEYWORD_POOL_SEED: "true"
-
-      # AI 호출 비활성 — collector 는 네이버 호출만, AI 0.
       DISABLE_AI: "true"
-
-      # 운영 환경 식별 (옵션)
       NODE_ENV: production
       TZ: Asia/Seoul
-
-      # 검색광고 API 키 (옵션) — 풀 cleanup cron 이 검색량 측정 시 사용.
-      # 비워두면 회사 측에서 측정한 결과만 보고 PAUSED 판정.
       NAVER_SEARCHAD_API_KEY: "${NAVER_SEARCHAD_API_KEY:-}"
       NAVER_SEARCHAD_SECRET_KEY: "${NAVER_SEARCHAD_SECRET_KEY:-}"
       NAVER_SEARCHAD_CUSTOMER_ID: "${NAVER_SEARCHAD_CUSTOMER_ID:-}"
-
-      # NEXTAUTH_SECRET — config 에서 require 라 빈 값이라도 32자+ 필요 (collector 는 안 씀).
       NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-collector_dummy_secret_at_least_32_chars_long_xx}"
-
-      # ENCRYPTION_KEY — crypto.service 가 부팅 시 검증. collector 는 안 쓰지만 빈 값이면 부팅 실패.
       ENCRYPTION_KEY: "${ENCRYPTION_KEY:-collector_dummy_at_least_32_chars_for_scrypt_xx}"
-
-    # 헬스체크 — Bull processor 가 1분 cron 으로 잡 처리 → 5분 안에 처리 로그 있어야 정상.
-    # 단순화: process 살아있나만 확인 (Node 가 죽으면 restart: unless-stopped 가 자동 부활).
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'node.*main' > /dev/null || exit 1"]
       interval: 60s
       timeout: 5s
       retries: 3
       start_period: 30s
-
-    # Watchtower 로 자동 업데이트 — GHCR :latest 갱신 시 자동 재시작.
-    # 회사 mk_api 와 동일한 이미지 태그를 따라가므로 본 marketing 빌드되면 collector 도 자동 갱신.
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
 
-  # Watchtower — :latest 태그 폴링 + 자동 pull/재시작.
-  # 회사 워크플로우와 동일. 5분마다 GHCR 확인.
+  # ─────────────────────────────────────────────────────────────────────────
+  # 2) PostgreSQL Streaming Replica — 자산 백업 (회사 SSD 사망 보험)
+  # ─────────────────────────────────────────────────────────────────────────
+  # 회사 mk_postgres (master) 의 hot standby. WAL 실시간 streaming.
+  # 회사 PC 사망 시 즉시 master 승격 가능 (수동 또는 Patroni).
+  # 사전 작업 (회사 PC 에서):
+  #   1) postgresql.conf — wal_level=replica, max_wal_senders=10, hot_standby=on
+  #   2) pg_hba.conf — host replication replicator 100.64.0.0/10 scram-sha-256
+  #   3) replicator 사용자 생성:
+  #      CREATE USER replicator WITH REPLICATION ENCRYPTED PASSWORD 'xxx';
+  #   4) 자세한 단계는 SETUP.md 참조
+  postgres-replica:
+    image: postgres:16-alpine  # 회사 mk_postgres 와 동일 버전 (16)
+    container_name: home_postgres_replica
+    restart: unless-stopped
+    network_mode: host  # Tailscale 인터페이스 통해 회사 master 접속
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-admin1234}"
+      POSTGRES_DB: marketing_intelligence
+      # streaming replication 모드 활성
+      PGUSER: replicator
+      TZ: Asia/Seoul
+    volumes:
+      - postgres_replica_data:/var/lib/postgresql/data
+      # 부팅 시 pg_basebackup 으로 master 복제 — entrypoint 안에서 실행
+      - ./scripts/replica-init.sh:/docker-entrypoint-initdb.d/replica-init.sh:ro
+    # 호스트 포트 5434 노출 — 사장님이 사고 시 직접 접속해서 데이터 조회 가능
+    # network_mode: host 라 PORT 매핑 무효 — 컨테이너 내부에서 5432 사용
+    # → host 의 5434 사용 위해선 PGPORT=5434 환경변수 + bridge 모드 전환 필요
+    # 현재는 단순화 — host 모드 + 컨테이너 5432 (회사와 같은 호스트면 충돌. 다른 미니 PC 라 OK)
+    # 나중에 master 승격 시 PORT 5432 그대로 사용하면 회사 master 와 같은 IP:포트 (집 PC IP) 가 됨
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d marketing_intelligence"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 3) Uptime Kuma — 모니터링 + 다운 시 알림
+  # ─────────────────────────────────────────────────────────────────────────
+  # 회사 mk_api / mk_web / mk_postgres 상태 1분마다 체크.
+  # 다운 감지 시 카카오톡 / 텔레그램 / 이메일 알림 발송.
+  # Web UI 는 집 PC IP:3001 으로 접속 (Tailscale 통해 사장님 어디서든 접근).
+  # 사용법: 셋업 후 http://<집PC_Tailscale_IP>:3001 접속 → 회사 endpoint 추가.
+  uptime-kuma:
+    image: louislam/uptime-kuma:1  # LTS 1.x. 매우 안정적
+    container_name: home_uptime_kuma
+    restart: unless-stopped
+    ports:
+      - "3001:3001"  # Web UI
+    volumes:
+      - uptime_kuma_data:/app/data
+    environment:
+      TZ: Asia/Seoul
+    healthcheck:
+      test: ["CMD-SHELL", "node /app/extra/healthcheck.js"]
+      interval: 60s
+      timeout: 30s
+      retries: 5
+      start_period: 60s
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 4) Watchtower — :latest 태그 자동 폴링 + pull/재시작
+  # ─────────────────────────────────────────────────────────────────────────
+  # collector 만 자동 갱신 대상. postgres-replica/uptime-kuma 는 안정 버전 고정.
   watchtower:
     image: containrrr/watchtower:latest
     container_name: home_watchtower
@@ -67,6 +110,10 @@ services:
     environment:
       WATCHTOWER_LABEL_ENABLE: "true"
       WATCHTOWER_CLEANUP: "true"
-      WATCHTOWER_POLL_INTERVAL: "300"  # 5분
+      WATCHTOWER_POLL_INTERVAL: "300"
       TZ: Asia/Seoul
     command: ["--label-enable", "--cleanup", "--interval", "300"]
+
+volumes:
+  postgres_replica_data:
+  uptime_kuma_data:

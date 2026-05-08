@@ -18,9 +18,17 @@ Marketing Intelligence Platform 의 **집 미니 PC 분산 수집 워커**.
 mk_api (전체)             ←→    home_collector (수집만)
   - 분석/AI/Web/UI                - keyword-pool processor
   - keyword-pool processor        - 회사 mk_redis 에 Bull 공유 connect
+mk_postgres (master)      ─→    home_postgres_replica (실시간 백업)
+                                 home_uptime_kuma (모니터링 + 다운 알림)
         │                                 │
-        └──── 같은 Bull Queue ─── 자동 분담 ──┘
+        └──── Tailscale VPN + 같은 Bull Queue ─── 자동 분담 ──┘
 ```
+
+**미니 PC 1대 = 4개 컨테이너 동시 가동**:
+1. **collector** — 네이버 분산 IP 로 키워드 풀 수집 (회사와 작업 분담)
+2. **postgres-replica** — 회사 master 의 hot standby (회사 SSD 사망 시 데이터 0 손실 보험)
+3. **uptime-kuma** — 회사 endpoint 1분마다 체크 + 다운 시 텔레그램 알림
+4. **watchtower** — collector 자동 갱신 (본 marketing 빌드 시)
 
 회사 코드를 그대로 재사용 (`ghcr.io/cho-y-j/marketing-api:latest`) → **코드 중복 0**. 본 marketing 의 `COLLECTOR_ONLY=true` ENV 분기로 keyword-pool 만 활성.
 
