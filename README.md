@@ -32,8 +32,14 @@ mk_postgres (master)      ─→    home_postgres_replica (실시간 백업)
 
 회사 코드를 그대로 재사용 (`ghcr.io/cho-y-j/marketing-api:latest`) → **코드 중복 0**. 본 marketing 의 `COLLECTOR_ONLY=true` ENV 분기로 keyword-pool 만 활성.
 
-## 셋업 — 5단계
+## 두 가지 셋업 방식
 
+### A. Native (Docker 없음) — 저사양 노트북 + Mac/Windows ⭐ NEW (Phase 14-24)
+- Node.js 20 LTS + Tailscale 설치 → install 스크립트 더블클릭
+- 자세한 가이드: `scripts/native/README-native.md`
+- **저사양 노트북, Mac, Windows 모두 가능**. Docker 부담 0.
+
+### B. Docker (Mac mini / Linux server)
 자세한 단계는 `SETUP.md` 참조.
 
 1. 미니 PC 준비 (Beelink N100 / Minisforum / Intel NUC — 4코어 16GB 권장)
