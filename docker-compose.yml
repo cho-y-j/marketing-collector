@@ -14,6 +14,9 @@ services:
     environment:
       COLLECTOR_ONLY: "true"
       WORKER_NAME: "${WORKER_NAME:-home}"
+      # Phase 14-24 풀 분리 — 서브 collector default EXTRA.
+      # CORE (priority≥100, 가입자 매장) 은 회사 mk_api 가 책임.
+      WORKER_TIER: "${WORKER_TIER:-EXTRA}"
       DATABASE_URL: "${DATABASE_URL}"
       REDIS_URL: "${REDIS_URL}"
       DISABLE_KEYWORD_POOL_SEED: "true"

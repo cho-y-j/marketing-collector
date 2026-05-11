@@ -95,6 +95,8 @@ if [ ! -f "$ENV_FILE" ]; then
 # Phase 14-24 — Native collector
 COLLECTOR_ONLY=true
 WORKER_NAME=${WORKER_NAME}
+# 풀 분리 — 서브 워커는 EXTRA (확장 시드). CORE 는 회사 mk_api 책임.
+WORKER_TIER=EXTRA
 NODE_ENV=production
 TZ=Asia/Seoul
 PORT=4001
