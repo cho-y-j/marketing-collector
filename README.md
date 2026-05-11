@@ -32,32 +32,34 @@ mk_postgres (master)      ─→    home_postgres_replica (실시간 백업)
 
 회사 코드를 그대로 재사용 (`ghcr.io/cho-y-j/marketing-api:latest`) → **코드 중복 0**. 본 marketing 의 `COLLECTOR_ONLY=true` ENV 분기로 keyword-pool 만 활성.
 
-## 두 가지 셋업 방식
+## ⭐ 한 줄 설치 (Phase 14-25)
 
-### A. Native (Docker 없음) — 저사양 노트북 + Mac/Windows ⭐ NEW (Phase 14-24)
-- Node.js 20 LTS + Tailscale 설치 → install 스크립트 더블클릭
-- 자세한 가이드: `scripts/native/README-native.md`
-- **저사양 노트북, Mac, Windows 모두 가능**. Docker 부담 0.
+신규 PC = Tailscale + Docker 만 설치돼 있으면 **명령 한 줄**로 끝. 토큰·IP·이름 입력 0개.
 
-### B. Docker (Mac mini / Linux server)
-자세한 단계는 `SETUP.md` 참조.
-
-1. 미니 PC 준비 (Beelink N100 / Minisforum / Intel NUC — 4코어 16GB 권장)
-2. Ubuntu Server 24.04 LTS 또는 Debian 12 설치
-3. Docker + Docker Compose 설치
-4. Tailscale 설치 + 회사 PC 와 한 tailnet 으로 연결
-5. 이 repo clone → `.env` 작성 → `docker compose up -d`
-
-## 빠른 시작
-
+**Mac / Linux**
 ```bash
-git clone https://github.com/cho-y-j/marketing-collector.git
-cd marketing-collector
-cp .env.example .env
-# .env 의 DATABASE_URL / REDIS_URL 을 회사 PC 의 Tailscale IP 로 수정
-docker compose up -d
-docker compose logs -f
+curl -fsSL http://100.88.194.96:5000/api/v1/install.sh | sh
 ```
+
+**Windows** (관리자 PowerShell)
+```powershell
+iwr -useb http://100.88.194.96:5000/api/v1/install.ps1 | iex
+```
+
+서버가 호출자의 hostname 으로 자동 등록 → 토큰 발급 → docker run 까지 한 번에. 같은 PC 에서 재실행해도 안전 (기존 토큰 자동 폐기 + 신규 발급).
+
+**전제 조건** (사전 1회만):
+1. Tailscale 설치 + 같은 tailnet 가입 ( https://tailscale.com/download )
+2. Docker Desktop (Win/Mac) 또는 Docker Engine (Linux)
+
+설치 후 확인:
+```
+docker logs -f marketing-collector
+```
+
+## 고급 셋업 — postgres-replica + uptime-kuma
+
+집 미니 PC 가 백업 + 모니터링 역할까지 겸하는 경우만 필요. `docker-compose.yml` 참조 + `SETUP.md` 단계 진행. 일반 분산 수집만 원하면 위 한 줄 설치로 충분.
 
 5분 안에 수집 로그가 보이면 정상:
 ```
