@@ -141,6 +141,35 @@ Write-Host ""
 Write-Host "=== 자동시작 등록 ===" -ForegroundColor Yellow
 pm2-startup install
 
+# 자동 갱신 스크립트 (매일 KST 13:50)
+$updateScript = "$appDir\auto-update.ps1"
+$updateContent = @"
+# Phase 14-24 자동 갱신 — 매일 KST 13:50
+Set-Location $appDir
+"=== `$(Get-Date -Format o) 자동 갱신 ===" | Out-File -Append "$appDir\auto-update.log"
+git fetch origin main 2>&1 | Out-File -Append "$appDir\auto-update.log"
+`$local = git rev-parse HEAD
+`$remote = git rev-parse origin/main
+if (`$local -eq `$remote) {
+    "변경 없음 — skip" | Out-File -Append "$appDir\auto-update.log"
+} else {
+    git pull origin main 2>&1 | Out-File -Append "$appDir\auto-update.log"
+    pnpm install --prod=false 2>&1 | Out-File -Append "$appDir\auto-update.log"
+    pnpm --filter api build 2>&1 | Out-File -Append "$appDir\auto-update.log"
+    pm2 restart collector 2>&1 | Out-File -Append "$appDir\auto-update.log"
+    "갱신 완료 — `$remote" | Out-File -Append "$appDir\auto-update.log"
+}
+"@
+Set-Content -Path $updateScript -Value $updateContent -Encoding UTF8
+
+# Windows Task Scheduler 등록
+$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$updateScript`""
+$trigger = New-ScheduledTaskTrigger -Daily -At 13:50
+$principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -LogonType S4U -RunLevel Highest
+Register-ScheduledTask -TaskName "marketing-collector-auto-update" -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+Write-OK "자동 갱신 Task Scheduler 등록 (매일 KST 13:50)"
+Write-Host "  로그: $appDir\auto-update.log"
+
 Write-Host ""
 Write-Host "=== 설치 완료 ===" -ForegroundColor Green
 Write-Host ""

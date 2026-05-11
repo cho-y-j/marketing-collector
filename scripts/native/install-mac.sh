@@ -134,6 +134,36 @@ echo "다음 명령을 ${RED}복사해서${NC} 터미널에 붙여넣으세요 (
 echo ""
 pm2 startup 2>&1 | grep -E "sudo|launchctl" | head -1
 echo ""
+
+# ─── 자동 git pull cron (매일 KST 13:50 — 14:00 사이클 시작 직전) ─────
+UPDATE_SCRIPT="$APP_DIR/auto-update.sh"
+cat > "$UPDATE_SCRIPT" <<UPDATEEOF
+#!/bin/bash
+# Phase 14-24 자동 갱신 — 매일 KST 13:50 (사이클 시작 14:00 직전)
+cd "$APP_DIR" || exit 1
+{
+  echo "=== \$(date -Iseconds) 자동 갱신 시작 ==="
+  git fetch origin main 2>&1
+  LOCAL=\$(git rev-parse HEAD)
+  REMOTE=\$(git rev-parse origin/main)
+  if [ "\$LOCAL" = "\$REMOTE" ]; then
+    echo "변경 없음 — skip"
+  else
+    git pull origin main 2>&1
+    $(command -v pnpm) install --prod=false 2>&1 | tail -3
+    $(command -v pnpm) --filter api build 2>&1 | tail -3
+    $(command -v pm2) restart collector 2>&1
+    echo "갱신 완료 — \$REMOTE"
+  fi
+} >> "$APP_DIR/auto-update.log" 2>&1
+UPDATEEOF
+chmod +x "$UPDATE_SCRIPT"
+
+# crontab 등록 (KST 13:50)
+( crontab -l 2>/dev/null | grep -v "auto-update.sh"; echo "50 13 * * * $UPDATE_SCRIPT" ) | crontab -
+echo -e "${GREEN}✓ 자동 갱신 cron 등록 (매일 KST 13:50)${NC}"
+echo "  로그: $APP_DIR/auto-update.log"
+echo ""
 echo -e "${GREEN}=== 설치 완료 ===${NC}"
 echo ""
 echo "유용한 명령:"
