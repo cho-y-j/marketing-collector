@@ -1,37 +1,44 @@
 services:
   # ─────────────────────────────────────────────────────────────────────────
-  # 1) Collector — 네이버 분산 수집 워커
+  # 1) Collector — 네이버 분산 수집 워커 (균열 43 fix, 2026-05-18)
   # ─────────────────────────────────────────────────────────────────────────
-  # 본 marketing docker 이미지 그대로 재사용 (코드 중복 0).
-  # 회사 mk_postgres + mk_redis 에 Tailscale VPN 으로 접속.
-  # Bull Queue 공유 — 회사 워커와 자동 분담.
+  # 옛: marketing-api:latest + COLLECTOR_ONLY=true.
+  # 폐기 이유: 2026-05-12 marketing repo commit 0b4b8cd (Phase 14-27 Step 7) 로
+  #   `jobs/keyword-pool-cron.job.ts` + `processors/keyword-pool-collect.processor.ts` (Guest/Core/Extra) +
+  #   `helper.ts` + `queue.constants.ts` KEYWORD_POOL_* 3개 통째 삭제 → marketing-api 이미지에 EXTRA listen 코드 0건.
+  #   서브 PC heartbeat 만 정상 (별도 endpoint), Bull queue 5/12 ~ 5/18 6일째 미가동 = P8 절대 원칙 구조적 위반.
+  #
+  # 정공법 (균열 43): dataset_api 이미지 사용 + collector 모드 ENV.
+  #   - 회사 전용 서비스 (TelegramPolling/HealthWatchJob/IpHealthProbe) 가 WORKER_NAME === "dataset-server-core"
+  #     체크로 자동 분기 → 서브 PC 에선 자동 미가동 (코드 0줄 수정).
+  #   - dataset 이 fix 원본 (P5) — collector 도 dataset 이미지로 통일 = 의존성 단절.
+  #     marketing repo 의 keyword-pool 코드 변경이 서브 collector 에 0 영향.
   collector:
-    image: ghcr.io/cho-y-j/marketing-api:latest
+    image: ghcr.io/cho-y-j/marketing-dataset-api:latest
     container_name: home_collector
     restart: unless-stopped
     pull_policy: always
     network_mode: host
     environment:
-      COLLECTOR_ONLY: "true"
-      WORKER_NAME: "${WORKER_NAME:-home}"
-      # Phase 14-24 풀 분리 — 서브 collector default EXTRA.
-      # CORE (priority≥100, 가입자 매장) 은 회사 mk_api 가 책임.
-      WORKER_TIER: "${WORKER_TIER:-EXTRA}"
+      WORKER_NAME: "${WORKER_NAME:-collector-home}"
+      # dataset_api collector 모드 — EXTRA processor 만 등록.
+      # CORE processor 는 항상 등록 → CoreProcessor.shouldProcess() 의 XOR 분기로 자동 통제
+      #   (회사 정상 시 서브 CORE skip / 회사 차단 시 서브 CORE fallback).
+      DISABLE_KEYWORD_POOL_CRON: "true"        # cron enqueue 회사만
+      DISABLE_EXTRA_CRON: "true"
+      DISABLE_EXTRA_PROCESSOR: "false"         # EXTRA processor 등록 (서브 핵심 역할)
+      DISABLE_GUEST_PROCESSOR: "true"          # GUEST 회사만 (가입자 즉시 측정)
+      DISABLE_KEYWORD_POOL_CLEANUP: "true"
+      DISABLE_KEYWORD_POOL_PRUNE: "true"
+      DISABLE_KEYWORD_POOL_SEED: "true"
+      DISABLE_HEARTBEAT_MONITOR: "true"        # 서브가 회사 워커 감시 안 함
+      DISABLE_DAILY_REPORT: "true"
+      DISABLE_ROLLUP: "true"                   # 롤업 회사만
+      COLLECTOR_HEARTBEAT: "true"              # 자기 자신 heartbeat upsert
       DATABASE_URL: "${DATABASE_URL}"
       REDIS_URL: "${REDIS_URL}"
-      DISABLE_KEYWORD_POOL_SEED: "true"
-      DISABLE_AI: "true"
       NODE_ENV: production
       TZ: Asia/Seoul
-      NAVER_SEARCHAD_API_KEY: "${NAVER_SEARCHAD_API_KEY:-}"
-      NAVER_SEARCHAD_SECRET_KEY: "${NAVER_SEARCHAD_SECRET_KEY:-}"
-      NAVER_SEARCHAD_CUSTOMER_ID: "${NAVER_SEARCHAD_CUSTOMER_ID:-}"
-      # Phase 14-24 — marketing-dataset 데이터센터 dual-write
-      DATASET_API_URL: "${DATASET_API_URL:-}"
-      DATASET_API_TOKEN: "${DATASET_API_TOKEN:-}"
-      DATASET_SOURCE_PROGRAM: "${DATASET_SOURCE_PROGRAM:-marketing}"
-      NEXTAUTH_SECRET: "${NEXTAUTH_SECRET:-collector_dummy_secret_at_least_32_chars_long_xx}"
-      ENCRYPTION_KEY: "${ENCRYPTION_KEY:-collector_dummy_at_least_32_chars_for_scrypt_xx}"
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'node.*main' > /dev/null || exit 1"]
       interval: 60s
